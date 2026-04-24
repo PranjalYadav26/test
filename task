@@ -1,0 +1,245 @@
+/* ----------------------------------------------------------------------------------------------------
+ Author: Abbas Jainuddin Bagichawala (Appirio)
+ Date : 25/11/2020
+ Description: Task helper methods used in task trigger handler
+ <Date>      <Authors Name>     <Brief Description of Change>
+ 12/2/2020      Abbas            ALCSP-554,553 To update campaign member last status, Sentiment Type, Category for record type ASM.
+ 4/3/2020        Yu Jin            ALCSP-1170 added logic for update task when case has passed 5 business days
+ -------------------------------------------------------------------------------------------------------*/
+public without sharing class TaskHelper{
+	public static void updateCampMemAndCreateCaseHelper(List<Task> newTasks){
+		system.debug('Task Trigger - Before Insert called');
+		//set<Id> contactIds = new set<Id>();
+		//set<Id> campIds = new set<Id>();
+		set<Id> campMemberIds = new set<Id>();
+		Set<String> contCampMembers = new Set<String>();
+		//Map<String, CampaignMember__c> mapContToCampMembers = new Map<String, CampaignMember__c>();
+		for (Task taskObj : newTasks){
+			campMemberIds.add(taskObj.CampaignMember__c);
+			//system.debug('Contact id :' + taskObj.WhoId);
+			//system.debug('campaign id' + taskObj.WhatId);
+			//system.debug('record type id' + taskObj.recordtypeId);
+
+			//Record type check for call log & Related to Campaign object & Contact need to be selected.
+			/*if ((taskObj.recordtypeId == ConstantsTask.TASK_RT_CALL_LOG || taskObj.recordtypeId == ConstantsTask.TASK_RT_ASM) && taskObj.WhatId != Null && String.valueOf(taskObj.WhatId).startsWith('701') && taskObj.WhoId != Null && String.valueOf(taskObj.WhoId).startsWith('003')){
+				//campIds.add(taskObj.WhatId);
+                //if(taskObj.recordtypeId == ConstantsTask.TASK_RT_CALL_LOG){
+				//contactIds.add(taskObj.WhoId);
+			}
+                if(taskObj.recordtypeId == ConstantsTask.TASK_RT_ASM){
+                    contactIds.add(taskObj.CallObject);
+                }
+				
+			}*/
+		}
+		//system.debug('Contact Ids' + contactIds);
+		//system.debug('Campaign Ids' + campIds);
+		List<CampaignMember__c> campMemList = new List<CampaignMember__c>();
+		if (!campMemberIds.isEmpty()){
+			campMemList = [Select Id, ContactId__c, ContactId__r.AccountId, Financial_Account__c, CampaignId__c, CampaignId__r.name, Last_Status__c, Number_of_Interaction__c, Done__c, Outcome__c, recordtype.name
+			               from CampaignMember__c
+			               where Id IN:campMemberIds];
+			system.debug('campMemList' + campMemList);
+		}
+		/*for (CampaignMember__c campMemberObj : campMemList){
+			mapContToCampMembers.put(campMemberObj.CampaignId__c + '-' + campMemberObj.ContactId__c, campMemberObj);
+		}*/
+		Map<Id, CampaignMember__c> mapContToCampMembers = new Map<Id, CampaignMember__c>(campMemList);
+
+		List<CampaignMember__c> updateCamMembers = new List<CampaignMember__c>();
+		List<case> insertCaseList = new List<Case>();
+		for (Task tObj : newTasks){
+			//Record type check for call log & Related to Campaign object & Contact need to be selected.
+			if ((tObj.recordtypeId == ConstantsTask.TASK_RT_CALL_LOG || tObj.recordtypeId == ConstantsTask.TASK_RT_ASM) && tObj.WhatId != null && String.valueOf(tObj.WhatId).startsWith('701') && tObj.WhoId != null && String.valueOf(tObj.WhoId).startsWith('003')){
+				CampaignMember__c campObj = new CampaignMember__c();
+				campObj = mapContToCampMembers.get(tObj.CampaignMember__c);
+                
+				system.debug('Fetched CampObj' + campObj);
+				if (campObj == null){
+					tObj.addError('Campaign member does not exist');
+				} else if (campObj != null && campObj.Done__c){
+					tObj.addError('Campaign member is already completed and marked as done');
+				} else if ((tObj.Call_Status__c == ConstantsTask.CALL_STATUS_CONTACTED || tObj.Call_Status__c == ConstantsTask.CALL_STATUS_NO_NEED_TO_CONTACT) && String.isEmpty(tObj.outcome__c)){
+					tObj.addError('Please select an outcome');
+				} else if (campObj.Number_of_Interaction__c == 0 && (tObj.Call_Status__c == ConstantsTask.CALL_STATUS_LEFT_MESSAGE || tObj.Call_Status__c == ConstantsTask.CALL_STATUS_NO_ANSWER) && String.isNotEmpty(tObj.outcome__c)){
+					tObj.addError('You are not allowed to select an Outcome.');
+				} else if (campObj.Number_of_Interaction__c > 0 && String.isEmpty(tObj.outcome__c) && (tObj.Call_Status__c == ConstantsTask.CALL_STATUS_LEFT_MESSAGE || tObj.Call_Status__c == ConstantsTask.CALL_STATUS_NO_ANSWER)){
+					tObj.addError('Please select an outcome');
+				} else if (tObj.Call_Status__c == ConstantsTask.CALL_STATUS_WRONG_NUMBER && String.isEmpty(tObj.outcome__c)){
+					tObj.addError('Please select an outcome');
+				} else if (tObj.Call_Status__c == ConstantsTask.CALL_STATUS_CALL_BACK_LATER && String.isNotEmpty(tObj.outcome__c)){
+					tObj.addError('You are not allowed to select an Outcome.');
+				} else{
+					if (campObj.Recordtype.name == 'Adviser Support'){
+						campObj.Done__c = true;
+						campObj.Sentiment_Type__c = tObj.Sentiment_Type__c;
+						campObj.Sentiment_Category__c = tObj.Sentiment_Category__c;
+						campObj.Comment__c = tObj.PRM_Comments__c;
+						campObj.Last_Status__c = 'Completed';
+						updateCamMembers.add(campObj);
+					} else{
+						System.debug(tObj.Call_Status__c);
+						campObj.Last_Status__c = tObj.Call_Status__c;
+						campObj.Number_of_Interaction__c = campObj.Number_of_Interaction__c + 1;
+						if (tObj.outcome__c != null){
+							campObj.outcome__c = tObj.outcome__c;
+							campObj.Done__c = true;
+						}
+						updateCamMembers.add(campObj);
+						String directionType = tObj.Direction__c == 'Inbound' ? 'Call - Inbound' : 'Call - Outbound';
+						if (tObj.Call_Status__c == ConstantsTask.CALL_STATUS_LEFT_MESSAGE || tObj.Call_Status__c == ConstantsTask.CALL_STATUS_NO_ANSWER || tObj.Call_Status__c == ConstantsTask.CALL_STATUS_CONTACTED || tObj.Call_Status__c == ConstantsTask.CALL_STATUS_CALL_BACK_LATER){
+							Case caseObj = new Case(Description = campObj.CampaignId__r.name, Category__c = 'Campaigns', Caller_Type__c = 'Customer', Type = directionType, FinServ__FinancialAccount__c = campObj.Financial_Account__c, AccountId = campObj.ContactId__r.AccountId);
+							if (tObj.Description != null){
+								caseObj.Description += ' ' + tObj.Description;
+							}
+							if (String.isNotEmpty(campObj.Recordtype.name) && campObj.Recordtype.name == 'AU Customer Solutions'){
+								caseObj.RecordTypeId = ConstantsCases.CASE_CCS_SOLUTION_AU;
+							}
+                            if (String.isNotEmpty(campObj.Recordtype.name) && campObj.Recordtype.name == 'NZ Customer Solutions'){
+								caseObj.RecordTypeId = ConstantsCases.CASE_CCS_SOLUTION_NZ;
+							}
+                            if (String.isNotEmpty(campObj.Recordtype.name) && campObj.Recordtype.name == 'Asteron Customer Solutions'){  // Updated for Asteron Case Creation
+								caseObj.RecordTypeId = ConstantsCases.CASE_CCS_SOLUTION_ASTERON;
+							}
+							insertCaseList.add(caseObj);
+						}
+					}
+				}
+			}
+		}
+		if (updateCamMembers != null & updateCamMembers.size() > 0)
+			update updateCamMembers;
+		if (insertCaseList != null & insertCaseList.size() > 0)
+			insert insertCaseList;
+	}
+
+	//@author : Yu Jin
+	//Trigger locations : Case Process and Complaint (AU) entitlement process
+	public static void updateComplaintAndCreateTask(List<Task> newTasksList){
+		List<CaseExt_Complaint__c> complaintToUpdate = new List<CaseExt_Complaint__c>();
+		List<CaseMilestone> cmToUpdate = new List<CaseMilestone>();
+		List<CaseMilestone> cmToUpdate2 = new List<CaseMilestone>();
+		Set<Id> caseIdSet = new Set<Id>();
+        Set<Id> caseIdSetForSimple = new Set<Id>();
+
+		try{
+			for (Task t : newTasksList){
+				String whatID = (String)t.WhatId;
+				system.debug('task' + t);
+				if (whatID.subString(0, 3) == '500' && (t.Subject == 'Acknowledgement - 5 Days' || t.Subject == 'Complaint Response - 5 Days')){
+					caseIdSet.add(t.WhatId);
+				}
+        if (whatID.subString(0,3)=='500' && (t.Subject == 'Acknowledgement - Simple')){
+           caseIdSetForSimple.add(t.WhatId);
+        }
+			}
+			system.debug('case id set ' + caseIdSet);
+
+			//Creating a complaint map for CaseId and Complaint
+			Map<String, CaseExt_Complaint__c> complaintMap = new Map<String, CaseExt_Complaint__c>();
+			//Creating a complaint Id map is used to link ComplaintID and CaseID
+			Map<String, String> complaintIdMap = new Map<String, String>();
+			Set<Id> complaintIdSet = new Set<Id>();
+			Set<Id> caseMilestoneToUpdate = new Set<Id>();
+      Set<Id> complaintIdSetSimple = new Set<Id>();
+
+			for (Case c : [SELECT Complaint__c, Complaint__r.Id, Id
+			               from Case
+			               where Id IN :caseIdSet]){
+				complaintIdMap.put(c.Complaint__r.Id, c.Id);
+				complaintIdSet.add(c.Complaint__c);
+			}
+
+      for (Case c : [SELECT Complaint__c, Complaint__r.Id, Id
+			               from Case
+			               where Id IN :caseIdSetForSimple]){
+				complaintIdMap.put(c.Complaint__r.Id, c.Id);
+				complaintIdSetSimple.add(c.Complaint__c);
+			}
+
+			for (CaseExt_Complaint__c caseExtObj : [Select Complaint_Level__c, RecordTypeId, Complaint_Received_Date__c, Class_of_Business__c, Case_Number__c
+			                                        from CaseExt_Complaint__c
+			                                        where Id IN :complaintIdSet]){
+
+				//Automated Escalate complaint IDR Simple to IDR Complex
+				if (caseExtObj.Complaint_Level__c == ConstantsComplaint.COMPLAINT_LEVEL_IDR_SIMPLE){
+					caseExtObj.Complaint_Level__c = ConstantsComplaint.COMPLAINT_LEVEL_IDR_COMPLEX;
+					caseExtObj.RecordTypeId = ConstantsComplaint.COMPLAINT_RT_IDR_COMPLEX;
+					caseMilestoneToUpdate.add(complaintIdMap.get(caseExtObj.Id));
+					complaintToUpdate.add(caseExtObj);
+				}
+				//Created below map to calculate due date.
+				complaintMap.put(complaintIdMap.get(caseExtObj.Id), caseExtObj);
+			}
+      for (CaseExt_Complaint__c caseExtObj : [Select Complaint_Level__c, RecordTypeId, Complaint_Received_Date__c, Class_of_Business__c, Case_Number__c
+			                                        from CaseExt_Complaint__c
+                                              where Id IN :complaintIdSetSimple]){
+
+      	complaintMap.put(complaintIdMap.get(caseExtObj.Id), caseExtObj);
+      }
+
+			system.debug('complaintMap' + complaintMap);
+			if (!newTasksList.isEmpty()){
+				for (Task newTask : newTasksList){
+					system.debug('new Task before' + newTask);
+					CaseExt_Complaint__c ce = complaintMap.get(newTask.WhatId);
+
+					if (newTask.Subject == 'Acknowledgement - 5 Days' || newTask.Subject == 'Acknowledgement - Simple'){
+						newTask.recordTypeId = ConstantsTask.TASK_RT_COMPLAINT_MANAGEMENT;
+						newTask.Subject = 'Acknowledgement';
+						newTask.Direction__c = 'Outbound Response';
+						newTask.Status = 'Not Started';
+						newTask.ActivityDate = ce.Complaint_Received_Date__c + 1;
+						newTask.Is_Required__c = true;
+						newTask.Type = 'Calendar';
+						newTask.Description = 'WHAT\'S NEW:\n WHAT DID I DO:\n NEXT ACTION:';
+					}
+					if (newTask.Subject == 'Complaint Response - 5 Days'){
+						newTask.recordTypeId = ConstantsTask.TASK_RT_COMPLAINT_MANAGEMENT;
+						newTask.Subject = 'Complaint Response';
+						newTask.Direction__c = 'Outbound Response';
+						newTask.Status = 'Not Started';
+						//ALCSP:2878 - Adding P,E,T values for Superannuation calculation.
+						if (ce.Class_of_Business__c != null && (ce.Class_of_Business__c == 'Superannuation' || ce.Class_of_Business__c.touppercase() == 'S' || ce.Class_of_Business__c.touppercase() == 'P' || ce.Class_of_Business__c.touppercase() == 'E' || ce.Class_of_Business__c.touppercase() == 'T')){
+							newTask.ActivityDate = ce.Complaint_Received_Date__c + 44;
+						} else if (ce.Class_of_Business__c != null && (ce.Class_of_Business__c == 'Ordinary' || ce.Class_of_Business__c.touppercase() == 'O' || ce.Class_of_Business__c == 'Not Applicable' || ce.Class_of_Business__c == 'NA' || ce.Class_of_Business__c.touppercase() == 'N')){
+							newTask.ActivityDate = ce.Complaint_Received_Date__c + 29;
+						}
+						newTask.Is_Required__c = true;
+						newTask.Type = 'Business';
+						newTask.Description = 'WHAT\'S NEW:\n WHAT DID I DO:\n NEXT ACTION:';
+					}
+					system.debug('new Task after' + newTask);
+				}
+			}
+
+			if (!caseMilestoneToUpdate.isEmpty()){
+				for (CaseMilestone cm : [SELECT Id, completionDate
+				                         FROM CaseMilestone
+				                         where caseId IN :caseMilestoneToUpdate]){
+					cm.completionDate = System.now();
+					cmToUpdate.add(cm);
+				}
+			}
+
+			if (!complaintToUpdate.isEmpty())
+				update complaintToUpdate;
+			if (!cmToUpdate.isEmpty()){
+				update cmToUpdate;
+				for (CaseMilestone cm : [SELECT Id, MilestoneType.Name, StartDate
+				                         FROM CaseMilestone
+				                         where caseId IN :caseMilestoneToUpdate]){
+					if (cm.MilestoneType.Name == '5-day Reminder notification'){
+						cm.completionDate = System.now();
+						cmToUpdate2.add(cm);
+					}
+				}
+			}
+			if (!cmToUpdate2.isEmpty()){
+				update cmToUpdate2;
+			}
+		} catch (Exception e){
+			logUtilityCapture.insertErrorLog(e);
+		}
+	}
+}

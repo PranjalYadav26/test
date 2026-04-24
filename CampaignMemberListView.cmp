@@ -1,0 +1,230 @@
+<!--
+ 	Author: Yu Jin Wong (Appirio)
+  	Date : 16/11/2020
+  	Description: Child component CampaignMemberListButton. Displays listviews depending on which button is clicked.
+     (ALCSP - 540/541/543)
+  	<Date>      <Authors Name>     <Brief Description of Change>
+  	30/11/2020		Yu Jin Wong		Moved columns init to run after getCampaignDetails inorder to have a recordtype check
+ 	3/12/2020		Yu Jin Wong		(ALCSP-536) Added Campaign status check for handleRowAction function in controller. 
+-->
+<aura:component controller="CampaignMemberListViewController" access="global">
+
+    <!-- Parent Object Attributes-->
+    <aura:attribute name="button" type="String" />
+    <aura:attribute name="recordId" type="Id"/>
+
+    <!-- Console Nav Attributes-->
+    <lightning:workspaceAPI aura:id="workspace" />
+    <aura:attribute name="tabId" type="String" />
+    <aura:attribute name="isConsoleNav" type="boolean" />
+
+    <!-- Campaign Attributes-->
+    <aura:attribute name="cmpMembers" type="CampaignMember__c[]" default="[]"/>
+    <aura:attribute name="selectedCmpMemberId" type="Id"/>
+    <aura:attribute name="totalNoOfCampaignMembers" type="Integer" default="0"/>
+    <aura:attribute name="totalAllocatedMembers" type="Integer" default="0"/>
+    <aura:attribute name="cmRecordTypeName" type="String"/>
+
+    <!-- Activity/Task (call log) Attributes-->
+    <aura:attribute name="callLog" type="Task"/>
+    <aura:attribute name="taskAssignedToUser" type="User"/>
+    <aura:attribute name="taskRelatedToCampaign" type="Campaign"/>
+    <aura:attribute name="attempts" type="Integer" />
+
+    <!-- Pagifing Attributes-->
+    <aura:attribute name="pagifiedCmpMembers" type="Object" default="[]"/>
+    <aura:attribute name="allData" type="Object" default="[]"/>
+    <aura:attribute name="allDataTemp" type="Object" default="[]"/>
+
+    <!-- Display Attributes-->
+    <aura:attribute name="isUpdateAssignee" type="Boolean" default="false"/>
+    <aura:attribute name="isCallList" type="Boolean" default="false"/>
+    <aura:attribute name="showSpinner" type="Boolean" default="true"/>
+
+    <!-- Assignee User search Attributes-->
+    <aura:attribute name="Assignee" type="User"/>
+    
+	<!-- Filtering Attributes -->
+    <aura:attribute name="filterFieldsPicklist" type="Object[]"/>
+    <aura:attribute name="filter" type="List" default="[
+	{ 'Id' : 'filter0', 'field' : '' , 'value' : '' }]"/>
+    <aura:attribute name="maxFilter" type="Integer" default="1"/>
+
+    <!-- Table Attributes-->
+    <aura:attribute name="tableColumns" type="List" default="[]"/>
+    <aura:attribute name="pageSize" type="Integer" default="20"/>
+    <aura:attribute name="page" type="Integer" default="1"/>
+    <aura:attribute name="totalPages" type="Integer" default="1"/>
+    <aura:attribute name="selectedDataRows" type="List" default="[]"/>
+    <aura:attribute name="sortedBy" type="String" />
+    <aura:attribute name="sortDirection" type="String" default="asc" />
+    <aura:attribute name="defaultSortDirection" type="String" default="asc" />
+    <aura:attribute name="currentUser" type="Id"/>
+    <aura:attribute name="search" type="String"/>
+    
+    <!-- ConfirmBox Attributes-->
+    <aura:attribute name="showConfirmBox" type="boolean" default="false"/>
+    <aura:attribute name="operation" type="string" default=""/>
+    <aura:attribute name="header" type="string" default=""/>
+    <aura:attribute name="confirmMessage" type="string" default=""/>
+    
+
+    <!-- EVENTS -->
+    <aura:handler name="init" value="{!this}" action="{!c.doInit}"/>
+    <aura:handler name="closemodal" event="c:CloseModal" action="{!c.handleModalClose}"/>
+    <aura:handler name="onConfirm" event="c:confirmationboxevent" action="{!c.handleConfirm}" />
+
+    <!-- header and title -->
+    <div class="slds-page-header">
+        <div class="slds-grid slds-gutters slds-grid slds-grid--vertical-align-end slds-grid--align-spread">
+         
+            <div class="slds-card__header-link slds-truncate">
+                <span class="slds-text-heading--medium slds-m-left_small">
+                    <aura:if isTrue="{!v.isUpdateAssignee}">
+                        <lightning:icon iconName="standard:call"/>
+                        Update Assignee
+                    </aura:if>
+                    <aura:if isTrue="{!v.isCallList}">
+                        <lightning:icon iconName="standard:call"/>
+                        View Campaign Call List
+                    </aura:if>
+                </span>
+            </div>
+
+            <div class="slds-col slds-size_1-of-2">
+                <div class="slds-float_right">
+                    <lightning:buttonIcon iconName="utility:refresh" onclick="{!c.handleRefresh}"/>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Showing spinner while loading -->
+    <aura:if isTrue="{!v.showSpinner}">
+        <div class="slds-spinner_container spinner_height">
+            <div role="status" class="slds-spinner slds-spinner_brand slds-spinner_medium">
+                <span class="slds-assistive-text">Loading</span>
+                <div class="slds-spinner__dot-a"></div>
+                <div class="slds-spinner__dot-b"></div>
+            </div>
+        </div>
+    </aura:if>
+
+    <!-- Body and table -->
+    <div class="slds-page-header slds-page-header_vertical slds-p-bottom_x-large ">
+           
+        <!-- User assignment section for when updateAssignee button is clicked -->
+        <aura:if isTrue="{!v.isUpdateAssignee}">
+            
+            <!-- Custom Filter seaching-->
+            <div class="slds-grid slds-gutters slds-grid--vertical-align-end">
+            	<span id="filterErrorMsg" class="slds-text-color_error slds-p-left_small"></span>
+            </div>
+            <aura:iteration items="{!v.filter}" var="filterVar" indexVar="ivar">   
+                <div class="slds-grid slds-gutters slds-grid--vertical-align-end">   
+                    
+                    <div aura:id="{!filterVar.id + field}" class="slds-col slds-size_2-of-6">	              
+                        <lightning:combobox name="filter" label="Field" placeholder="-None-" 
+                                            options="{!v.filterFieldsPicklist}" value="{!filterVar.field}"/>
+                        
+                    </div>  
+                    <div aura:id="{!filterVar.id + value}" class="slds-col slds-size_1-of-6">
+                        <lightning:input type="{!filterVar.field == 'LastModifiedDate' ? 'date' : 'text'}" label="Field Value" name="filter1" 
+                                         value="{!filterVar.value}"
+                                         placeholder="Value"/>
+                    </div>
+                    <aura:if isTrue="{!ivar != 0}">
+                        <a href="#" onclick="{!c.removeFilter}" data-ivar="{!ivar}">- Remove</a>
+                    </aura:if>
+                </div>                
+                
+            </aura:iteration>
+            <a href="#" onclick="{!c.addFilter}">+ More</a>
+            <!--lightning:button label="Add" variant="brand" onclick="{!c.addFilter}"/-->  
+            
+            <div class="slds-grid slds-gutters slds-grid--vertical-align-end slds-p-top_x-small">
+                <div class="slds-col slds-size_1-of-1">	
+                    <lightning:button label="Clear Filter" variant="brand" onclick="{!c.handleClearFilter}"/>                                     
+                	<lightning:button label="Filter" variant="brand" onclick="{!c.submitFilter}"/>
+                </div>
+
+            </div>            
+            
+            <div class="slds-grid slds-gutters slds-grid--vertical-align-end">
+                <div class="slds-col slds-size_1-of-3">
+                    <div aura:id = "userLookup">
+                    <label class="slds-form-element__label">User Search</label>
+                    <c:ultimateLookup selectedResult="{!v.Assignee}" sObjectName="User" searchFields="Name"
+										resultLimit="10" resultFields="Name"
+										showOnFocus="false" lookupIcon="standard:user"
+										titleField="Name" subtitleFields="Name" useSOSL="false" sObjectLabel="User"
+                                     	/>
+                    </div>
+                    <span id="userSearchError" class="slds-text-color_error"></span>
+                </div>
+
+                <div class="slds-col slds-size_1-of-3">
+                    <lightning:button variant="brand" aura:id="UpdateButton" label="Update Assignee" onclick="{!c.updateAssignee}"/>
+                </div>
+
+                <div class="slds-col slds-size_1-of-3">
+                    <div class="slds-float_right">
+                        <p> {!v.totalAllocatedMembers} out of {!v.totalNoOfCampaignMembers} allocated </p>
+                    </div>
+                </div>
+            </div>
+        </aura:if>
+		
+        <div class="slds-grid slds-gutters slds-grid--vertical-align-end">
+            <div class="slds-col slds-size_6-of-12">
+                <lightning:input type="text" label="Search" onchange="{!c.handleSearch}" value="{!v.search}" placeholder="Search Customer Name, Contract Number or Contact Number..."/>
+            </div>
+            <div class="slds-col slds-size_6-of-12">
+                <aura:if isTrue="{!v.isUpdateAssignee}">
+                    <div class="slds-float_right">
+                        <lightning:button variant="brand-outline" aura:id="deleteAttemptZero" label="Bulk Delete Zero Attempt" onclick="{!c.showDeleteConfirmbox}"/>
+                        <lightning:button variant="brand-outline" aura:id="bulkUpdateOutcome" label="Bulk Update Outcome" onclick="{!c.showUpdateConfirmbox}"/>
+                    </div>
+                    <aura:if isTrue="{!v.showConfirmBox}">
+                        <c:confirmationbox operation="{!v.operation}" header="{!v.header}" confirmMessage="{!v.confirmMessage}"/>     
+                    </aura:if>
+                </aura:if>    
+            </div>
+        </div>    
+        <!--lightning table to display for both callList and updateAssignee-->
+        <div class="slds-p-vertical_medium">
+            <lightning:datatable 	aura:id="dataTable"
+                                 columns="{!v.tableColumns}"
+                                 keyField="Id"
+                                 data="{!v.cmpMembers}"
+                                 enableInfiniteLoading="false"
+                                 onrowaction="{!c.handleRowAction}"
+                                 hideCheckboxColumn="{!v.isCallList}"
+                                 onrowselection="{!c.updateSelectedRows}"
+                                 sortedDirection="{!v.sortDirection}"
+                                 onsort="{!c.handleSort}"
+                                 sortedBy="{!v.sortedBy}"
+                                 minColumnWidth="80"
+                                 />            
+        </div>
+
+        <!-- PAGINATION OF DATA -->
+        <div class="slds-card__footer slds-p-top_small">
+            <div class="slds-align_absolute-center">
+                <lightning:button disabled="{!v.page == 1}" variant="brand" label="Previous" onclick="{!c.previousPage}"/>
+                &nbsp; &nbsp; <p class="slds-text-color_weak slds-text-title_caps slds-truncate">page {!v.page} / {!v.totalPages}</p>&nbsp; &nbsp;
+                <lightning:button disabled="{!v.page == v.totalPages}" variant="brand" label="Next" onclick="{!c.nextPage}"/>
+            </div>
+        </div>
+
+        <section role="dialog" aura:id="callLogModal" tabindex="-1" aria-labelledby="modal-heading-01" aria-describedby="modal-content-id-1" class="slds-modal">
+        <!-- Child component to display case form modal-->
+            <c:CallLogForm showSpinner="{!v.showSpinner}" callLog="{!v.callLog}" taskAssignedToUser="{!v.taskAssignedToUser}"
+							taskRelatedToCampaign="{!v.taskRelatedToCampaign}" attempts="{!v.attempts}"
+                           currentUser="{!v.currentUser}" recordId="{!v.recordId}"/>
+        </section>
+
+    </div>
+    <!-- TO UNFOCUS BACKGROUND -->
+    <div aura:id="backdrop" class="slds-backdrop"></div>
+</aura:component>

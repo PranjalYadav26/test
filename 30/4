@@ -1,0 +1,942 @@
+/* ----------------------------------------------------------------------------------------------------
+	Author: Yu Jin Wong (Appirio) 14/10/2020
+	Description: Controller class used for AddressCard aura component to display address information on
+				Account detail page
+	<Date>      <Authors Name>     <Brief Description of Change>
+    26/09/2025   Pranjal Yadav     add the new method getContactForMailing,saveContactMailingAddress     
+
+-------------------------------------------------------------------------------------------------------*/
+
+public with sharing class AddressesController {
+/////////////////////// AS PART OF SD-1008
+
+@AuraEnabled
+public static Contact getContactForMailing(Id contactId) {
+   
+    
+    Contact result = [SELECT Id, MailingStreet, MailingCity, MailingState, MailingPostalCode, MailingCountry,
+                             OtherStreet, OtherCity, OtherState, OtherPostalCode, OtherCountry,
+                             Physical_Address__c,
+                             Account.ShippingStreet, Account.ShippingCity, Account.ShippingState, 
+                             Account.ShippingPostalCode, Account.ShippingCountry
+                      FROM Contact 
+                      WHERE Id = :contactId 
+                      LIMIT 1];
+  
+    
+    return result;
+}
+
+
+@AuraEnabled
+public static Contact saveContactMailingAddress(Id contactId, String street, String city, String state, String postcode, String country) {
+
+    // Query the record before update to see current state
+    Contact beforeUpdate = [SELECT MailingStreet, MailingCity, MailingState, MailingPostalCode, MailingCountry 
+                           FROM Contact WHERE Id = :contactId];
+   
+    
+    Contact contact = new Contact(Id = contactId);
+    
+    // Handle empty strings as null for proper database storage
+    contact.MailingStreet = String.isNotBlank(street) ? street : null;
+    contact.MailingCity = String.isNotBlank(city) ? city : null;
+    contact.MailingState = String.isNotBlank(state) && !state.equals('1') && !state.equals('Please Select') ? state : null;
+    contact.MailingPostalCode = String.isNotBlank(postcode) ? postcode : null;
+    contact.MailingCountry = String.isNotBlank(country) ? country : null;
+    
+    
+    try {
+        update contact;
+        System.debug('UPDATE SUCCESSFUL');
+        
+        // Query again after update to verify
+        Contact afterUpdate = [SELECT MailingStreet, MailingCity, MailingState, MailingPostalCode, MailingCountry 
+                              FROM Contact WHERE Id = :contactId];
+        System.debug('AFTER UPDATE - State: ' + afterUpdate.MailingState + ', Country: ' + afterUpdate.MailingCountry);
+        
+    } catch (Exception e) {
+        System.debug('UPDATE FAILED: ' + e.getMessage());
+        throw e;
+    }
+    
+    return getContactForMailing(contactId);
+}
+
+
+/////////////////////////
+  @AuraEnabled
+  public static string getUserLocation() {
+    return [select Country from User where Id = :UserInfo.getUserId() limit 1].Country;
+  }
+
+  @AuraEnabled
+  public static Account getAccount(Id accountId) {
+    return [SELECT Id, Name, RecordType.Name, Postal_Address_Delivery_Point_Id__c, Business_Delivery_Point_Id__c, FinServ__PrimaryContact__c, BillingCity, BillingCountry, BillingPostalCode, BillingState, BillingStreet, Business_Suburb__c, Business_Address_Invalid__c, Business_Addressee_Name__c, ShippingCity, ShippingCountry, ShippingPostalCode, ShippingState, ShippingStreet, Postal_Suburb__c, Postal_Address_Invalid__c, Postal_Addressee_Name__c FROM Account WHERE Id = :accountId];
+  }
+
+  @AuraEnabled
+  public static Contact getContact(Id accountId) {
+    List<Contact> contList = [SELECT Id, Residential_Address_Delivery_Point_Id__c, OtherStreet, OtherCity, OtherState, OtherPostalCode, OtherCountry, Residential_Address_Invalid__c, Residential_Suburb__c FROM Contact WHERE AccountId = :accountId LIMIT 1];
+    if (!contList.isEmpty()) {
+      return contList[0];
+    } else {
+      return null;
+    }
+  }
+
+  @AuraEnabled
+  public static string getQASAuthToken() {
+  	return [select Auth_Token__c from QAS_Setting__mdt where label = 'Auth Token' limit 1].Auth_Token__c;
+  }
+
+  @AuraEnabled
+  public static FinServ__FinancialAccount__c[] getFinancialAccounts(Id accountId) {
+    List<FinServ__FinancialAccount__c> orderedAccounts = new List<FinServ__FinancialAccount__c>();
+    try {
+      //SFP-2788 Jerry
+      String profileName = UtilityClass.getUserInfo('PROFILENAME');
+      String whereQueryFAR = null;
+      String whereQueryFA = null;
+      String productAS = ConstantsFinancialAccount.FA_PRODUCT_CODE_AS;
+      String productIL = ConstantsFinancialAccount.FA_PRODUCT_CODE_IL;
+
+      if (profileName.contains('~External')) {
+        whereQueryFAR = '(FinServ__RelatedAccount__c =: accountId OR SCV_RelatedAccount__c =: accountId) '
+            + 'AND FinServ__Role__c = \'Primary Life Insured\' '
+            + 'AND FinServ__FinancialAccount__r.Product_System_Code__c = \'TZ\''
+            + 'AND FinServ__FinancialAccount__r.FinServ__Status__c = \'Active\'';
+
+        whereQueryFA = '(FinServ__Status__c = \'Active\' '
+            + 'AND (FinServ__PrimaryOwner__c = :accountId OR SCV_PrimaryOwner__c = :accountId) '
+            + 'AND (AMP_Product__c = true OR '
+            + 'Product_System_Code__c = :productAS OR Product_System_Code__c = :productIL)) '
+            + 'OR Id IN: faIds ORDER BY LastModifiedDate DESC';
+      } else {
+        //   whereQueryFAR = '(FinServ__RelatedAccount__c =: accountId OR SCV_RelatedAccount__c =: accountId) '
+        whereQueryFAR = '(FinServ__RelatedAccount__c =: accountId) '
+            + 'AND FinServ__Role__c = \'Primary Life Insured\' '
+            + 'AND FinServ__FinancialAccount__r.Product_System_Code__c = \'TZ\'';
+
+        //   whereQueryFA = '((FinServ__PrimaryOwner__c=:accountId OR SCV_PrimaryOwner__c = :accountId) '
+        //               + 'AND AMP_Product__c = true) '
+        //   + 'OR Id IN: faIds ORDER BY LastModifiedDate DESC';
+
+        whereQueryFA = 'FinServ__PrimaryOwner__c=:accountId  '
+            + 'ORDER BY LastModifiedDate DESC';
+      }
+
+      String queryStringFAR = 'SELECT FinServ__FinancialAccount__r.Id FROM FinServ__FinancialAccountRole__c WHERE ' + whereQueryFAR;
+
+      String queryStringFA = 'SELECT Id, Name, FinServ__PrimaryOwner__c, FinServ__ProductName__r.Name, FinServ__Status__c, ' +
+          'Product_System__c, Product_System_Code__c, FinServ__FinancialAccountNumber__c, FinServ__Address1__c, ' +
+          'FinServ__City__c, FinServ__State__c, Suburb__c, FinServ__Country__c, FinServ__PostalCode__c, ' +
+          'Address_WADI__c, FinServ__FinancialAccountType__c, Address_DPID__c FROM FinServ__FinancialAccount__c ' +
+          'WHERE ' + whereQueryFA;
+
+
+
+
+      Set<Id> faIds = new Set<Id>();
+      for (FinServ__FinancialAccountRole__c rec : Database.query(queryStringFAR)) {
+        faIds.add(rec.FinServ__FinancialAccount__r.Id);
+      }
+      system.debug(queryStringFA);
+      List<FinServ__FinancialAccount__c> financialAccounts = Database.query(queryStringFA);
+
+
+      List<FinServ__FinancialAccount__c> active = new List<FinServ__FinancialAccount__c>();
+      List<FinServ__FinancialAccount__c> pending = new List<FinServ__FinancialAccount__c>();
+      List<FinServ__FinancialAccount__c> lodged = new List<FinServ__FinancialAccount__c>();
+      List<FinServ__FinancialAccount__c> closed = new List<FinServ__FinancialAccount__c>();
+      List<FinServ__FinancialAccount__c> ASandIL = new List<FinServ__FinancialAccount__c>();
+      List<FinServ__FinancialAccount__c> other = new List<FinServ__FinancialAccount__c>();
+      for (FinServ__FinancialAccount__c finAct : financialAccounts) {
+        if (finAct.FinServ__Status__c == 'Active') {
+          if (finAct.Product_System_Code__c == productAS
+              || finAct.Product_System_Code__c == productIL) {
+            ASandIL.add(finAct);
+          } else {
+            active.add(finAct);
+          }
+        } else if (finAct.FinServ__Status__c == 'Pending') {
+          pending.add(finAct);
+        } else if (finAct.FinServ__Status__c == 'Lodged') {
+          lodged.add(finAct);
+        } else if (finAct.FinServ__Status__c == 'Closed') {
+          closed.add(finAct);
+        } else {
+          other.add(finAct);
+        }
+      }
+      orderedAccounts.addAll(active);
+      orderedAccounts.addAll(other);
+      orderedAccounts.addAll(pending);
+      orderedAccounts.addAll(lodged);
+      orderedAccounts.addAll(closed);
+      orderedAccounts.addAll(ASandIL);
+    } catch (Exception e) {
+      logUtilityCapture.insertErrorLog(e);
+
+    }
+      system.debug('UB01' + orderedAccounts);
+    return orderedAccounts;
+  }
+
+  @AuraEnabled
+  public static void saveAddressConsolidated(Id accountRecordId, Id contactRecordId, String street, String suburb, String city, String state, String postcode, String country, Boolean invalid, string DPID,
+      Boolean isResidentialChecked, Boolean isPostalChecked, Boolean isBusinessChecked, List<Id> finAccountIds) {
+
+    Contact contact = new Contact();
+    Account account = new Account();
+    List<FinServ__FinancialAccount__c> fasUpdate = new List<FinServ__FinancialAccount__c>();
+
+    if (isResidentialChecked) {
+      UtilityClass.isResidentialChecked = true;
+      contact.Id = contactRecordId;
+      contact.OtherStreet = street;
+      contact.Residential_Suburb__c = suburb;
+      contact.OtherCity = city;
+      contact.OtherState = state;
+      contact.OtherPostalCode = postcode;
+      contact.OtherCountry = country;
+      contact.Residential_Address_Invalid__c = invalid;
+      contact.Residential_Address_Delivery_Point_Id__c = DPID;
+    }
+
+    if (isPostalChecked) {
+      UtilityClass.isPostalChecked = true;
+      account.Id = accountRecordId;
+      account.ShippingStreet = street;
+      account.Postal_Suburb__c = suburb;
+      account.ShippingCity = city;
+      account.ShippingState = state;
+      account.ShippingPostalCode = postcode;
+      account.ShippingCountry = country;
+      account.Postal_Address_Invalid__c = invalid;
+      account.Postal_Address_Delivery_Point_Id__c = DPID;
+    }
+    if (isBusinessChecked) {
+      UtilityClass.isBusinessChecked = true;
+      account.Id = accountRecordId;
+      account.BillingStreet = street;
+      account.Business_Suburb__c = suburb;
+      account.BillingCity = city;
+      account.BillingState = state;
+      account.BillingPostalCode = postcode;
+      account.BillingCountry = country;
+      account.Business_Address_Invalid__c = invalid;
+      account.Business_Delivery_Point_Id__c = DPID;
+    }
+
+    for (Id faId : finAccountIds) {
+      FinServ__FinancialAccount__c finAcct = new FinServ__FinancialAccount__c();
+      finAcct.Id = faId;
+      finAcct.FinServ__Address1__c = street;
+      finAcct.Suburb__c = suburb;
+      finAcct.FinServ__City__c = city;
+      finAcct.FinServ__State__c = state;
+      finAcct.FinServ__PostalCode__c = postcode;
+      finAcct.FinServ__Country__c = country;
+      //finAcct.Address_Invalid__c = invalid; SFP-35055
+      finAcct.Address_WADI__c = invalid;
+      finAcct.Address_DPID__c = DPID;
+      fasUpdate.add(finAcct);
+    }
+
+    try {
+
+      if (isResidentialChecked) {
+        resetStaticVariables();
+        update contact;
+      }
+
+      if (isPostalChecked || isBusinessChecked) {
+        resetStaticVariables();
+        update account;
+      }
+
+      if (fasUpdate.size() > 0) update fasUpdate;
+
+    } catch (Exception e) {
+       logUtilityCapture.insertErrorLog(e);
+
+    }
+
+  }
+  @AuraEnabled
+  public static Contact saveContactAddress(Id id, String street, String suburb, String city, String state, String postcode, String country, Boolean invalid, string DPID) {
+    Contact contact = new Contact();
+    try {
+      contact.Id = id;
+      contact.OtherStreet = street;
+      contact.Residential_Suburb__c = suburb;
+      contact.OtherCity = city;
+      contact.OtherState = state;
+      contact.OtherPostalCode = postcode;
+      contact.OtherCountry = country;
+      contact.Residential_Address_Invalid__c = invalid;
+      contact.Residential_Address_Delivery_Point_Id__c = DPID;
+
+      resetStaticVariables();
+      update contact;
+    } catch (Exception e) {
+      logUtilityCapture.insertErrorLog(e);
+    }
+    return contact;
+  }
+
+  @AuraEnabled
+  public static Account saveAccountAddress(Id id, String addressType, String street, String suburb, String city, String state, String postcode, String country, Boolean invalid, string DPID) {
+    Account returnVal = null;
+    try {
+      Account account = [SELECT Id, Name, RecordType.Name, Postal_Address_Delivery_Point_Id__c, Business_Delivery_Point_Id__c, FinServ__PrimaryContact__c, BillingCity, BillingCountry, BillingPostalCode, BillingState, BillingStreet, Business_Suburb__c, Business_Address_Invalid__c, Business_Addressee_Name__c, ShippingCity, ShippingCountry, ShippingPostalCode, ShippingState, ShippingStreet, Postal_Suburb__c, Postal_Address_Invalid__c, Postal_Addressee_Name__c FROM Account WHERE Id = :id];
+      if (addressType == 'Postal') {
+        account.ShippingStreet = street;
+        account.Postal_Suburb__c = suburb;
+        account.ShippingCity = city;
+        account.ShippingState = state;
+        account.ShippingPostalCode = postcode;
+        account.ShippingCountry = country;
+        account.Postal_Address_Invalid__c = invalid;
+        account.Postal_Address_Delivery_Point_Id__c = DPID;
+      } else if (addressType == 'Business') {
+        account.BillingStreet = street;
+        account.Business_Suburb__c = suburb;
+        account.BillingCity = city;
+        account.BillingState = state;
+        account.BillingPostalCode = postcode;
+        account.BillingCountry = country;
+        account.Business_Address_Invalid__c = invalid;
+        account.Business_Delivery_Point_Id__c = DPID;
+      } else if (addressType == 'PostalBusiness') {
+        account.ShippingStreet = street;
+        account.Postal_Suburb__c = suburb;
+        account.ShippingCity = city;
+        account.ShippingState = state;
+        account.ShippingPostalCode = postcode;
+        account.ShippingCountry = country;
+        account.Postal_Address_Invalid__c = invalid;
+        account.Postal_Address_Delivery_Point_Id__c = DPID;
+
+        account.BillingStreet = street;
+        account.Business_Suburb__c = suburb;
+        account.BillingCity = city;
+        account.BillingState = state;
+        account.BillingPostalCode = postcode;
+        account.BillingCountry = country;
+        account.Business_Address_Invalid__c = invalid;
+        account.Business_Delivery_Point_Id__c = DPID;
+      }
+      resetStaticVariables();
+      update account;
+
+
+      returnVal = account;
+    } catch (Exception e) {
+     logUtilityCapture.insertErrorLog(e);
+    }
+    return returnVal;
+  }
+
+  @AuraEnabled
+  public static FinServ__FinancialAccount__c[] saveFinancialAccountAddress(Id accountId, Id id, String street, String suburb, String city, String state, String postcode, String country, Boolean invalid, string DPID) {
+    FinServ__FinancialAccount__c[] returnVal = null;
+    try {
+      FinServ__FinancialAccount__c finAcct = [SELECT Id, Address_DPID__c, FinServ__Address1__c, FinServ__City__c, FinServ__State__c, Suburb__c, FinServ__Country__c, FinServ__PostalCode__c, /*Address_Invalid__c SFP-35055*/ Address_WADI__c FROM FinServ__FinancialAccount__c WHERE Id = :id];
+      finAcct.FinServ__Address1__c = street;
+      finAcct.Suburb__c = suburb;
+      finAcct.FinServ__City__c = city;
+      finAcct.FinServ__State__c = state;
+      finAcct.FinServ__PostalCode__c = postcode;
+      finAcct.FinServ__Country__c = country;
+      finAcct.Address_WADI__c = invalid;
+      finAcct.Address_DPID__c = DPID;
+
+      update finAcct;
+      // return [SELECT Id, Name, FinServ__ProductName__r.Name, FinServ__Status__c, Product_System__c, Product_System_Code__c, Address_DPID__c, FinServ__FinancialAccountNumber__c, FinServ__Address1__c, FinServ__City__c, FinServ__State__c, Suburb__c, FinServ__Country__c, FinServ__PostalCode__c, Address_Invalid__c FROM FinServ__FinancialAccount__c WHERE AMP_Product__c = true and (FinServ__PrimaryOwner__c=:accountId OR FinServ__JointOwner__c=:accountId)];
+      returnVal = null; // Leveraging force:refreshView to re initialize the component instead
+    } catch (Exception e) {
+     logUtilityCapture.insertErrorLog(e);
+    }
+    return returnVal;
+  }
+
+  @AuraEnabled
+  public static Contact saveContactAddressInvalid(Id id, Boolean invalid) {
+    Contact returnVal = null;
+    try {
+      Contact contact = new Contact();
+      contact.Id = id;
+      contact.Residential_Address_Invalid__c = invalid;
+      resetStaticVariables();
+      update contact;
+      returnVal = contact;
+    } catch (Exception e) {
+      //check if error message is from validation rule and due to deleted records
+      if (!e.getMessage().contains('FIELD_CUSTOM_VALIDATION_EXCEPTION') && !e.getMessage().contains('ENTITY_IS_DELETED')) {
+       logUtilityCapture.insertErrorLog(e);
+      }
+      throw new aurahandledexception(e.getMessage());
+    }
+    return returnVal;
+  }
+
+  @AuraEnabled
+  public static Account saveAccountAddressInvalid(Id id, String addressType, Boolean invalid) {
+    Account returnVal = null;
+    try {
+      Account account = new Account();
+      account.Id = id;
+      if (addressType == 'Postal Address') {
+        account.Postal_Address_Invalid__c = invalid;
+      } else if (addressType == 'Business Address') {
+        account.Business_Address_Invalid__c = invalid;
+      }
+      resetStaticVariables();
+      update account;
+      returnVal = account;
+    } catch (Exception e) {
+      //check if error message is from validation rule and due to deleted records
+      if (!e.getMessage().contains('FIELD_CUSTOM_VALIDATION_EXCEPTION') && !e.getMessage().contains('ENTITY_IS_DELETED')) {
+        logUtilityCapture.insertErrorLog(e);
+      }
+      throw new aurahandledexception(e.getMessage());
+    }
+    return returnVal;
+  }
+
+  @AuraEnabled
+  public static FinServ__FinancialAccount__c saveFinancialAccountAddressInvalid(Id id, Boolean invalid) {
+    FinServ__FinancialAccount__c returnVal = null;
+    try {
+      FinServ__FinancialAccount__c finAct = new FinServ__FinancialAccount__c();
+      finAct.Id = id;
+      finAct.Address_WADI__c = invalid;
+      update finAct;
+      returnVal = finAct;
+    } catch (Exception e) {
+      //check if error message is from validation rule and due to deleted records
+      if (!e.getMessage().contains('FIELD_CUSTOM_VALIDATION_EXCEPTION') && !e.getMessage().contains('ENTITY_IS_DELETED')) {
+       logUtilityCapture.insertErrorLog(e);
+      }
+      throw new aurahandledexception(e.getMessage());
+    }
+    return returnVal;
+  }
+
+  @AuraEnabled
+  public static List<SObject> getGroupMemberData(Id getAccountID, String retrievalScenario) {
+    List<SObject> getGMData = new List<SObject>();
+    try {
+      if (getAccountID != null) {
+        Map<Id, Id> getContactData = new Map<Id, Id>();
+        for (Contact c : [SELECT Id, AccountId FROM Contact WHERE Id IN (SELECT ContactId FROM AccountContactRelation WHERE AccountId = :getAccountID)]) {
+          getContactData.put(c.Id, c.AccountId);
+        }
+        if (getContactData.size() > 0) {
+          // Group Member Accounts
+          if (retrievalScenario == 'AccAddCtrl_GM_Account') {
+            getGMData = [
+                SELECT Id, FinServ__PrimaryContact__c, Name, RecordType.Name,
+                    ShippingStreet, Postal_Suburb__c, ShippingCity, ShippingState, ShippingPostalCode, ShippingCountry, Postal_Address_Invalid__c,
+                    BillingStreet, Business_Suburb__c, BillingCity, BillingState, BillingPostalCode, BillingCountry, Business_Address_Invalid__c
+                FROM Account
+                WHERE Id IN:getContactData.values()
+            ];
+          }
+          // Group Member Financial Accounts
+          if (retrievalScenario == 'AccAddCtrl_GM_FinAccount') {
+            getGMData = getAllFinancialAccounts(getContactData.values());
+          }
+          // Group Member Contacts
+          if (retrievalScenario == 'AccAddCtrl_GM_Contact') {
+            getGMData = [
+                SELECT Id, AccountId, Name, RecordType.Name,
+                    OtherStreet, Residential_Suburb__c, OtherCity, OtherState, OtherPostalCode, OtherCountry, Residential_Address_Invalid__c
+                FROM Contact
+                WHERE Id IN:getContactData.keySet()
+            ];
+          }
+        }
+      }
+    } catch (Exception e) {
+   logUtilityCapture.insertErrorLog(e);
+    }
+
+    return getGMData;
+  }
+
+  @AuraEnabled
+  public static FinServ__FinancialAccount__c[] getAllFinancialAccounts(List<Id> allConAccountIds) {
+    List<FinServ__FinancialAccount__c> getFinancialAccounts = new List<FinServ__FinancialAccount__c>();
+    try {
+      Set<Id> faIds = new Set<Id>();
+      for (FinServ__FinancialAccountRole__c rec : [
+          SELECT FinServ__FinancialAccount__r.Id
+          FROM FinServ__FinancialAccountRole__c
+          WHERE FinServ__RelatedAccount__c IN:allConAccountIds AND
+          FinServ__Role__c = 'Primary Life Insured' AND
+          FinServ__FinancialAccount__r.Product_System_Code__c = 'TZ'
+      ]) {
+        faIds.add(rec.FinServ__FinancialAccount__r.Id);
+      }
+      List<FinServ__FinancialAccount__c> financialAccounts = [
+          SELECT Id, Name, FinServ__PrimaryOwner__c, FinServ__ProductName__r.Name, FinServ__Status__c,
+              Product_System__c, Product_System_Code__c,
+              FinServ__FinancialAccountNumber__c, FinServ__Address1__c,
+              FinServ__City__c, FinServ__State__c, Suburb__c,
+              FinServ__Country__c, FinServ__PostalCode__c,
+              /*Address_Invalid__c SFP-35055*/ Address_WADI__c, FinServ__FinancialAccountType__c,
+              Address_DPID__c
+          FROM FinServ__FinancialAccount__c
+          WHERE (AMP_Product__c = true and (FinServ__PrimaryOwner__c IN:allConAccountIds OR FinServ__JointOwner__c IN:allConAccountIds))
+          OR Id IN:faIds
+      ] ;
+
+      List<FinServ__FinancialAccount__c> active = new List<FinServ__FinancialAccount__c>();
+      List<FinServ__FinancialAccount__c> pending = new List<FinServ__FinancialAccount__c>();
+      List<FinServ__FinancialAccount__c> lodged = new List<FinServ__FinancialAccount__c>();
+      List<FinServ__FinancialAccount__c> closed = new List<FinServ__FinancialAccount__c>();
+      List<FinServ__FinancialAccount__c> other = new List<FinServ__FinancialAccount__c>();
+         system.debug('finAct.FinServ__Status__c:1:'+financialAccounts);
+      for (FinServ__FinancialAccount__c finAct : financialAccounts) {
+          system.debug('finAct.FinServ__Status__c::'+finAct.FinServ__Status__c);
+        if (finAct.FinServ__Status__c == 'Active') {
+          active.add(finAct);
+        } else if (finAct.FinServ__Status__c == 'Pending') {
+          pending.add(finAct);
+        } else if (finAct.FinServ__Status__c == 'Lodged') {
+          lodged.add(finAct);
+        } else if (finAct.FinServ__Status__c == 'Closed') {
+          closed.add(finAct);
+        } else {
+          other.add(finAct);
+        }
+      }
+      getFinancialAccounts.addAll(active);
+      getFinancialAccounts.addAll(other);
+      getFinancialAccounts.addAll(pending);
+      getFinancialAccounts.addAll(lodged);
+      getFinancialAccounts.addAll(closed);
+    } catch (Exception e) {
+      logUtilityCapture.insertErrorLog(e);
+    }
+    return getFinancialAccounts;
+  }
+
+
+  @AuraEnabled
+  public static void updateAllGroupAddresses(Id householdID, String street, String suburb, String city, String state, String postcode, String country, Boolean invalid, string DPID) {
+    try {
+      Set<Id> getGMContactIDs = new Set<Id>();
+      Set<Id> getGMAccountIDs = new Set<Id>();
+      Set<Id> getGMFinAccIDs = new Set<Id>();
+      List<Contact> gmAllContacts = new List<Contact>();
+      List<Contact> setContactListForUpd = new List<Contact>();
+      List<Account> gmAllAccounts = new List<Account>();
+      List<Account> setAccountListForUpd = new List<Account>();
+      List<FinServ__FinancialAccount__c> getAllFAAccounts = new List<FinServ__FinancialAccount__c>();
+      List<AccountContactRelation> acrList = [SELECT Id, ContactId FROM AccountContactRelation WHERE AccountId = :householdID];
+      List<Boolean> updateResidentialAddrValidity = new List<Boolean>();
+      List<Boolean> updatePostBusAddrValidity = new List<Boolean>();
+      Integer count = 0;
+	system.debug('acrList.size()::'+acrList.size());
+      if (acrList.size() > 0) {
+        for (AccountContactRelation acr : acrList) {
+          getGMContactIDs.add(acr.ContactId);
+        }
+        if (getGMContactIDs.size() > 0) {
+          gmAllContacts = [
+              SELECT AccountId, Account.RecordType.Name, OtherStreet, Residential_Suburb__c, OtherCity, OtherState, OtherPostalCode, OtherCountry,
+                  Residential_Address_Invalid__c, Residential_Address_Delivery_Point_Id__c
+              FROM Contact
+              WHERE Id IN:getGMContactIDs
+          ];
+          for (Contact c : gmAllContacts) {
+            getGMAccountIDs.add(c.AccountId);
+          }
+          if (getGMAccountIDs.size() > 0) {
+            gmAllAccounts = [
+                SELECT Id, Name, RecordType.Name, Postal_Address_Delivery_Point_Id__c, Business_Delivery_Point_Id__c,
+                    FinServ__PrimaryContact__c, BillingCity, BillingCountry, BillingPostalCode, BillingState, BillingStreet,
+                    Business_Suburb__c, Business_Address_Invalid__c, Business_Addressee_Name__c, ShippingCity, ShippingCountry,
+                    ShippingPostalCode, ShippingState, ShippingStreet, Postal_Suburb__c, Postal_Address_Invalid__c,
+                    Postal_Addressee_Name__c
+                FROM Account
+                WHERE Id IN:getGMAccountIDs
+            ];
+
+            if (gmAllContacts.size() > 0 || gmAllAccounts.size() > 0) {
+              // Group Member Contacts
+              for (Contact c : gmAllContacts) {
+                if (String.valueOf(c.Account.RecordType.Name).equals('Individual') ||
+                    String.valueOf(c.Account.RecordType.Name).equals('Associated Person')) {
+
+                  // * Residential Address
+                  if (c.OtherStreet != street) {
+                    c.OtherStreet = street;
+                    updateResidentialAddrValidity.add(true);
+                  }
+                  if (c.Residential_Suburb__c != suburb) {
+                    c.Residential_Suburb__c = suburb;
+                    updateResidentialAddrValidity.add(true);
+                  }
+                  if (c.OtherCity != city) {
+                    c.OtherCity = city;
+                    updateResidentialAddrValidity.add(true);
+                  }
+                  if (c.OtherState != state) {
+                    c.OtherState = state;
+                    updateResidentialAddrValidity.add(true);
+                  }
+                  if (c.OtherPostalCode != postcode) {
+                    c.OtherPostalCode = postcode;
+                    updateResidentialAddrValidity.add(true);
+                  }
+                  if (c.OtherCountry != country) {
+                    c.OtherCountry = country;
+                    updateResidentialAddrValidity.add(true);
+                  }
+                  if (c.Residential_Address_Invalid__c != invalid) {
+                    c.Residential_Address_Invalid__c = invalid;
+                    updateResidentialAddrValidity.add(true);
+                  }
+                  if (c.Residential_Address_Delivery_Point_Id__c != DPID) {
+                    c.Residential_Address_Delivery_Point_Id__c = DPID;
+                    updateResidentialAddrValidity.add(true);
+                  }
+
+                  if (updateResidentialAddrValidity.contains(true)) {
+                    setContactListForUpd.add(c);
+                  }
+                }
+              }
+              // Group Member Accounts
+              for (Account a : gmAllAccounts) {
+                // * Postal Address
+                if (a.ShippingStreet != street) {
+                  a.ShippingStreet = street;
+                  updatePostBusAddrValidity.add(true);
+                }
+                if (a.Postal_Suburb__c != suburb) {
+                  a.Postal_Suburb__c = suburb;
+                  updatePostBusAddrValidity.add(true);
+                }
+                if (a.ShippingCity != city) {
+                  a.ShippingCity = city;
+                  updatePostBusAddrValidity.add(true);
+                }
+                if (a.ShippingState != state) {
+                  a.ShippingState = state;
+                  updatePostBusAddrValidity.add(true);
+                }
+                if (a.ShippingPostalCode != postcode) {
+                  a.ShippingPostalCode = postcode;
+                  updatePostBusAddrValidity.add(true);
+                }
+                if (a.ShippingCountry != country) {
+                  a.ShippingCountry = country;
+                  updatePostBusAddrValidity.add(true);
+                }
+                if (a.Postal_Address_Invalid__c != invalid) {
+                  a.Postal_Address_Invalid__c = invalid;
+                  updatePostBusAddrValidity.add(true);
+                }
+                if (a.Postal_Address_Delivery_Point_Id__c != DPID) {
+                  a.Postal_Address_Delivery_Point_Id__c = DPID;
+                  updatePostBusAddrValidity.add(true);
+                }
+
+                // * Business Address
+                if (a.BillingStreet != street) {
+                  a.BillingStreet = street;
+                  updatePostBusAddrValidity.add(true);
+                }
+                if (a.Business_Suburb__c != suburb) {
+                  a.Business_Suburb__c = suburb;
+                  updatePostBusAddrValidity.add(true);
+                }
+                if (a.BillingCity != city) {
+                  a.BillingCity = city;
+                  updatePostBusAddrValidity.add(true);
+                }
+                if (a.BillingState != state) {
+                  a.BillingState = state;
+                  updatePostBusAddrValidity.add(true);
+                }
+                if (a.BillingPostalCode != postcode) {
+                  a.BillingPostalCode = postcode;
+                  updatePostBusAddrValidity.add(true);
+                }
+                if (a.BillingCountry != country) {
+                  a.BillingCountry = country;
+                  updatePostBusAddrValidity.add(true);
+                }
+                if (a.Business_Address_Invalid__c != invalid) {
+                  a.Business_Address_Invalid__c = invalid;
+                  updatePostBusAddrValidity.add(true);
+                }
+                if (a.Business_Delivery_Point_Id__c != DPID) {
+                  a.Business_Delivery_Point_Id__c = DPID;
+                  updatePostBusAddrValidity.add(true);
+                }
+
+                if (updatePostBusAddrValidity.contains(true)) {
+                  setAccountListForUpd.add(a);
+                }
+              }
+
+              // UPDATE RESIDENTIAL ADDRESSES
+              if (setContactListForUpd.size() > 0) {
+                update setContactListForUpd;
+              }
+              resetStaticVariables();
+              // UPDATE POSTAL, BUSINESS ADDRESSES
+              if (setAccountListForUpd.size() > 0) {
+                update setAccountListForUpd;
+              }
+            }
+          }
+        }
+      }
+    } catch (Exception e) {
+      logUtilityCapture.insertErrorLog(e);
+    }
+  }
+
+  @AuraEnabled
+  public static void bulkUpdateSpecificAddresses(Map<Id, String> getGMAddressMap, String street, String suburb, String city, String state, String postcode, String country, Boolean invalid, string DPID) {
+    try {
+        system.debug('getGMAddressMap::'+getGMAddressMap);
+      if (!getGMAddressMap.isEmpty()) {
+        Set<Id> gmAccountIds = new Set<Id>();
+        Set<Id> gmContactIds = new Set<Id>();
+        List<Contact> setContactListForUpd = new List<Contact>();
+        List<Account> setAccountListForUpd = new List<Account>();
+        List<Boolean> updateResidentialAddrValidity = new List<Boolean>();
+        List<Boolean> updatePostBusAddrValidity = new List<Boolean>();
+
+        for (Id gmId : getGMAddressMap.keySet()) {
+          String sobjectName = gmId.getSObjectType().getDescribe().getName();
+          if (sobjectName == 'Account') {
+            gmAccountIds.add(gmId);
+          } else if (sobjectName == 'Contact') {
+            gmContactIds.add(gmId);
+          }
+        }
+        if (!gmAccountIds.isEmpty()) {
+          List<Account> gmAccounts = [
+              SELECT Id, Name, RecordType.Name, Postal_Address_Delivery_Point_Id__c, Business_Delivery_Point_Id__c,
+                  FinServ__PrimaryContact__c, BillingCity, BillingCountry, BillingPostalCode, BillingState, BillingStreet,
+                  Business_Suburb__c, Business_Address_Invalid__c, Business_Addressee_Name__c, ShippingCity, ShippingCountry,
+                  ShippingPostalCode, ShippingState, ShippingStreet, Postal_Suburb__c, Postal_Address_Invalid__c,
+                  Postal_Addressee_Name__c
+              FROM Account
+              WHERE Id IN:gmAccountIds
+          ];
+
+          if (gmAccounts.size() > 0) {
+            for (Account a : gmAccounts) {
+              // * Postal Address
+              if (getGMAddressMap.get(a.Id).contains('Postal')) {
+                if (a.ShippingStreet != street) {
+                  a.ShippingStreet = street;
+                  updatePostBusAddrValidity.add(true);
+                }
+                if (a.Postal_Suburb__c != suburb) {
+                  a.Postal_Suburb__c = suburb;
+                  updatePostBusAddrValidity.add(true);
+                }
+                if (a.ShippingCity != city) {
+                  a.ShippingCity = city;
+                  updatePostBusAddrValidity.add(true);
+                }
+                if (a.ShippingState != state) {
+                  a.ShippingState = state;
+                  updatePostBusAddrValidity.add(true);
+                }
+                if (a.ShippingPostalCode != postcode) {
+                  a.ShippingPostalCode = postcode;
+                  updatePostBusAddrValidity.add(true);
+                }
+                if (a.ShippingCountry != country) {
+                  a.ShippingCountry = country;
+                  updatePostBusAddrValidity.add(true);
+                }
+                if (a.Postal_Address_Invalid__c != invalid) {
+                  a.Postal_Address_Invalid__c = invalid;
+                  updatePostBusAddrValidity.add(true);
+                }
+                if (a.Postal_Address_Delivery_Point_Id__c != DPID) {
+                  a.Postal_Address_Delivery_Point_Id__c = DPID;
+                  updatePostBusAddrValidity.add(true);
+                }
+              }
+
+              // * Business Address
+              if (getGMAddressMap.get(a.Id).contains('Business')) {
+                if (a.BillingStreet != street) {
+                  a.BillingStreet = street;
+                  updatePostBusAddrValidity.add(true);
+                }
+                if (a.Business_Suburb__c != suburb) {
+                  a.Business_Suburb__c = suburb;
+                  updatePostBusAddrValidity.add(true);
+                }
+                if (a.BillingCity != city) {
+                  a.BillingCity = city;
+                  updatePostBusAddrValidity.add(true);
+                }
+                if (a.BillingState != state) {
+                  a.BillingState = state;
+                  updatePostBusAddrValidity.add(true);
+                }
+                if (a.BillingPostalCode != postcode) {
+                  a.BillingPostalCode = postcode;
+                  updatePostBusAddrValidity.add(true);
+                }
+                if (a.BillingCountry != country) {
+                  a.BillingCountry = country;
+                  updatePostBusAddrValidity.add(true);
+                }
+                if (a.Business_Address_Invalid__c != invalid) {
+                  a.Business_Address_Invalid__c = invalid;
+                  updatePostBusAddrValidity.add(true);
+                }
+                if (a.Business_Delivery_Point_Id__c != DPID) {
+                  a.Business_Delivery_Point_Id__c = DPID;
+                  updatePostBusAddrValidity.add(true);
+                }
+              }
+
+              if (updatePostBusAddrValidity.contains(true)) {
+                setAccountListForUpd.add(a);
+              }
+            }
+          }
+        }
+
+        if (!gmContactIds.isEmpty()) {
+          List<Contact> gmContacts = [
+              SELECT AccountId, Account.RecordType.Name, OtherStreet, Residential_Suburb__c, OtherCity, OtherState, OtherPostalCode, OtherCountry,
+                  Residential_Address_Invalid__c, Residential_Address_Delivery_Point_Id__c
+              FROM Contact
+              WHERE Id IN:gmContactIds
+          ];
+
+          if (gmContacts.size() > 0) {
+            for (Contact c : gmContacts) {
+              // * Residential Address
+              if (getGMAddressMap.get(c.Id).contains('Residential')) {
+                if (c.OtherStreet != street) {
+                  c.OtherStreet = street;
+                  updateResidentialAddrValidity.add(true);
+                }
+                if (c.Residential_Suburb__c != suburb) {
+                  c.Residential_Suburb__c = suburb;
+                  updateResidentialAddrValidity.add(true);
+                }
+                if (c.OtherCity != city) {
+                  c.OtherCity = city;
+                  updateResidentialAddrValidity.add(true);
+                }
+                if (c.OtherState != state) {
+                  c.OtherState = state;
+                  updateResidentialAddrValidity.add(true);
+                }
+                if (c.OtherPostalCode != postcode) {
+                  c.OtherPostalCode = postcode;
+                  updateResidentialAddrValidity.add(true);
+                }
+                if (c.OtherCountry != country) {
+                  c.OtherCountry = country;
+                  updateResidentialAddrValidity.add(true);
+                }
+                if (c.Residential_Address_Invalid__c != invalid) {
+                  c.Residential_Address_Invalid__c = invalid;
+                  updateResidentialAddrValidity.add(true);
+                }
+                if (c.Residential_Address_Delivery_Point_Id__c != DPID) {
+                  c.Residential_Address_Delivery_Point_Id__c = DPID;
+                  updateResidentialAddrValidity.add(true);
+                }
+
+                if (updateResidentialAddrValidity.contains(true)) {
+                  setContactListForUpd.add(c);
+                }
+              }
+            }
+          }
+        }
+        // UPDATE RESIDENTIAL ADDRESSES
+        if (setContactListForUpd.size() > 0) {
+          update setContactListForUpd;
+        }
+        resetStaticVariables();
+        // UPDATE POSTAL, BUSINESS ADDRESSES
+        if (setAccountListForUpd.size() > 0) {
+          update setAccountListForUpd;
+        }
+      }
+    } catch (Exception e) {
+      logUtilityCapture.insertErrorLog(e);
+    }
+  }
+
+
+  /* Reset the static variables so that golden record propagation works and the trigger for source party is fired
+  even when two DMLs are executed in the same transaction*/
+  public static void resetStaticVariables() {
+    UtilityClass.sourcePartyIds = new Set<Id>();
+    UtilityClass.suppressPartyUpdate = false;
+   // AccountTriggerDispatcher.setIsAfterUpdateProcessing(false);
+   // ContactTriggerDispatcher.setIsAfterUpdateProcessing(false);
+  }
+
+  @AuraEnabled
+  public static String getUserRole() {
+    return UtilityClass.getUserInfo('ROLENAME');
+  }
+
+  //@AuraEnabled
+  //public static FinServ__FinancialAccount__c[] getFinAcctByProdSysCodes(String acctId, List<String> prodSysCodes) {
+    //return [SELECT Id, Name, SCV_PrimaryOwner__c, Product_System_Code__c FROM FinServ__FinancialAccount__c WHERE SCV_PrimaryOwner__c = :acctId and Product_System_Code__c IN:prodSysCodes];
+ // }
+
+  /**
+   * Consolidated method for init functions getUserLocation(), getAccount(), getContact(), getUserRole(),
+   * getFinAcctByProdSysCodes(), and getFinancialAccounts().
+   */
+  @AuraEnabled
+  public static UtilityClass.ApexResponse getDetailsAllAddresses(Id accountId){
+    Boolean isSuccess = true;
+    String errorMessage = '';
+    String responseString = '';
+    Map<String, Object> response = new Map<String, Object>();
+    try {
+      response.put('getUserLocation', getUserLocation());
+      response.put('getAccount', getAccount(accountId));
+      response.put('getContact', getContact(accountId));
+      /** Moving getRole() logic from Addresses component. */
+      String userRoleName = getUserRole();
+      Boolean isREMAdmin = false;
+            if(userRoleName == 'REM Remediation Admin Team Leader' || userRoleName == 'REM Remediation Admin Team Member'){
+        isREMAdmin = true;
+
+        // TODO Check if getFinAcctByProdSysCodes is still needed or if checking the list from getFinancialAccounts() for 'BD' types is a better solution. (regression of SFP-16002)
+       // response.put('getFinAcctByProdSysCodes', getFinAcctByProdSysCodes(accountId, new List<String>{'BD'}));
+      }
+      response.put('isREMAdmin', isREMAdmin);
+      response.put('getFinancialAccounts', getFinancialAccounts(accountId));
+
+    } catch (Exception e) {
+     logUtilityCapture.insertErrorLog(e);
+    }
+    return new UtilityClass.ApexResponse(isSuccess, response, errorMessage);
+  }
+
+
+
+
+}

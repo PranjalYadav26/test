@@ -1,0 +1,31 @@
+({
+	doInitQAS : function(component, event, helper){
+
+      var action = component.get("c.getQASAuthToken");
+        
+        action.setCallback(this, function(response){
+            
+            console.log("Auth Token: ",	 response.getReturnValue());
+            component.set("v.authToken", response.getReturnValue());
+            
+            helper.getAddressValidator(component, response.getReturnValue());
+        });
+        
+        $A.enqueueAction(action);
+      
+    },
+    
+    handleSelectedAddressChange: function(component, event, helper){
+        //console.log('component.get("v.selectedAddress"): ' + component.get("v.selectedAddress"));
+        var data = JSON.parse(component.get("v.selectedAddress"));
+        helper.fireSelectedEvent(component, data.address);
+        component.find("addressValidatorInput").getElements("");
+    },
+    
+    clearSearchText: function(component, event){
+        console.log('@@@ clearSearchText @@@');
+        component.set("v.searchText", '');
+        component.find("addressValidatorInput").getElement().value = '';
+    }
+
+})

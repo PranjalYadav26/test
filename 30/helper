@@ -1,0 +1,162 @@
+({
+    addressInstance: null,
+    getAddressValidator: function(component, authToken){
+        
+       /* var self = this;
+        if(typeof ContactDataServices !== "undefined" && !$A.util.isEmpty(component.get("v.countryCode"))){*/
+
+
+      var self = this;
+        if(typeof ContactDataServices !== "undefined" 
+            && !$A.util.isEmpty(component.get("v.countryCode"))
+               && !$A.util.isEmpty(component.get("v.authToken"))
+            )
+        {
+
+			
+
+            console.log("initing", component.get("v.countryCode"));
+            
+            var globalId = component.getGlobalId();
+            // set QAS options
+            var options = {
+                elements: {
+                    input: $('[id="'+globalId+'_addressValidator"]')[0],
+                    countryList: $('[id="'+globalId+'_countryCode"]')[0]
+                },
+                resultMapping: [
+                    {
+                        selector: '[id="'+globalId+'_addressValidator"]',
+                        format: '{{addressLine1}} {{addressLine2}} {{addressLine3}}, {{locality}} {{province}} {{postalCode}}'
+                    }],
+                notFoundText: 'No matching address found',
+                continueTypingText: 'Enter more information to see some suggested addresses eg. 10 High',
+                searchTermMinLength: 10,
+                //token: component.get("v.authToken")
+                token: authToken
+            };
+            console.log("options",options);
+            self.addressInstance = new ContactDataServices.address(options);
+            console.log("address instance",self.addressInstance);
+            
+            self.addressInstance.events.on("pre-search", function(term){ // ... 
+                console.log("pre-search", term);
+            });
+
+            self.addressInstance.events.on("pre-picklist-create", function(items){ // ... 
+                console.log("pre-picklist-create", items);
+            });
+            
+            self.addressInstance.events.on("post-picklist-create", function(item){
+                        console.log("pre-picklist-create", item);
+            });
+
+            self.addressInstance.events.on("pre-formatting-search", function(url){ 
+                console.log("pre-formatting-search", url);
+            });
+
+            self.addressInstance.events.on("post-picklist-selection", function(item){ 
+                console.log("post-picklist-selection", item);
+                
+                if(item.classList[0] === "use-address-entered"){
+                    component.set("v.manualAddressSelected", true);
+                }
+            });
+
+            self.addressInstance.events.on("request-error", function(xhr){
+                            console.log("request-error:", xhr);
+                            if(xhr == "Failed to communicate with address validation service - Enter address manually")
+                            {             
+                             var data = JSON.parse('{"address":[{"addressLine1":""},{"addressLine2":""},{"addressLine3":""},{"locality":""},{"province":""},{"postalCode":""},{"country":""},{"deliveryid":""},{"latitude":""},{"longitude":""}]}');
+                             console.log("request-error:", data );
+                             console.log("request-error-address:", data.address ); 
+                             component.set("v.selectedAddress", [0]); 
+                             console.log("request-error-selectedAddress:", component.set("v.selectedAddress",'{}') );  
+                            }
+            });
+            
+            
+            self.addressInstance.events.on("post-formatting-search", function(data){ 
+                console.log("post-formatting-search", data);
+                
+                // helper.fireSelectedEvent(component, data);
+                /** Lightning events are not visible inside this callback for some reason.
+             * Workaround is to use a component attribute to hold the data and have a "change"
+             * handler trigger the event (see controller function handleSelectedAddressChange) **/ 
+                component.set("v.selectedAddress", JSON.stringify(data));
+                
+            });
+            
+            /** hides picklist when out of focus **/
+            $('[id="'+globalId+'_addressValidator"]').on("blur", function(){
+            	/** Removed fadeout event to ensure picklist stay for 10 seconds.**/
+            //    $('.address-picklist-container').fadeOut(200);
+                window.setTimeout(
+                    $A.getCallback(function() {
+                        //self.addressInstance.input.value =  "";
+                        self.addressInstance.picklist.hide();                            
+                    }), 10000
+                );    
+            });
+        }
+    },
+
+
+    fireSelectedEvent : function(component, data) {
+        var evt = $A.get("e.c:e_AddressValidatorSelected");
+
+        console.log("evt", evt);
+
+        var addressLine1  = (this.getKeyValue(data, "addressLine1")) ? this.getKeyValue(data, "addressLine1") : '';
+        var addressLine2 = (this.getKeyValue(data, "addressLine2")) ? this.getKeyValue(data, "addressLine2") : ''; 
+        var addressLine3 =  (this.getKeyValue(data, "addressLine3")) ? this.getKeyValue(data, "addressLine3") : '';
+        
+        var locality =  this.getKeyValue(data, "locality");
+        
+       //yujin 14/10/2020 Temporary code to block city from return a false value.
+        if (locality == 'false'){
+			locality = '';
+        }
+        
+        var province =  this.getKeyValue(data, "province");
+        var postalCode =  (this.getKeyValue(data, "postalCode")) ? this.getKeyValue(data, "postalCode") : '';
+        var country =  this.getKeyValue(data, "country");
+        var deliveryid =  this.getKeyValue(data, "deliveryid");
+        var latitude =  this.getKeyValue(data, "latitude");
+        var longitude =  this.getKeyValue(data, "longitude");
+        var isManualAddress =  component.get("v.manualAddressSelected");
+
+
+        evt.setParams({
+        "addressLine1" : addressLine1,
+        "addressLine2" : addressLine2,
+        "addressLine3" : addressLine3,
+        "locality" : locality,
+        "province" : province,
+        "postalCode" : postalCode,
+        "country" : country,
+        "deliveryid" : deliveryid,
+        "latitude" : latitude,
+        "longitude" : longitude,
+        "isManualAddress" : isManualAddress
+        });
+       
+        component.set("v.manualAddressSelected", true); // reset
+        evt.fire();
+
+    },
+    
+    getKeyValue : function(data, key){
+        console.log("data ********:" + data);
+
+        if(data){
+             for (var i=0; i < data.length; i++) {
+              if (data[i].hasOwnProperty(key)) {
+                return data[i][key];
+            }
+          }
+        }
+       
+        return false;
+    }
+})
